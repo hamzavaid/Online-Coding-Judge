@@ -9,3 +9,5 @@ Problem writes are transactional. Submission creation locks the problem and snap
 The submission flow for the first three milestones is browser → API → PostgreSQL → Redis → single worker → Docker sandbox → PostgreSQL result → browser polling. Python and C++ are the initial languages. Expected outputs stay in the worker.
 
 Queue recovery, multiple-worker coordination, Kubernetes, contests, and dashboards belong to later milestones.
+
+Redis Streams carry submission IDs only. The single worker claims a queued row, compiles or syntax-checks the source, evaluates cases, writes the aggregate with a conditional PostgreSQL update, and acknowledges the delivery. Terminal states reject further transitions. Infrastructure failures are stored separately from user verdicts. A fixed launch marker starts execution deadlines after Docker startup; no submitted text is inserted into shell commands.

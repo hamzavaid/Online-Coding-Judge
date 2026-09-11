@@ -5,7 +5,9 @@ import (
 	"context"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/api"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"log/slog"
 	"net/http"
 	"os"
@@ -38,7 +40,13 @@ func run() error {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	server := &http.Server{Addr: addr, Handler: api.New(database.New(pool)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "127.0.0.1:6379"
+	}
+	client := redis.NewClient(&redis.Options{Addr: redisAddr, ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second, MaxRetries: -1})
+	defer client.Close()
+	server := &http.Server{Addr: addr, Handler: api.New(database.New(pool), queue.New(client, "judge:submissions")), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServe() }()
 	select {

@@ -18,7 +18,7 @@ import (
 )
 
 // New constructs the API; request bodies and database calls have hard bounds.
-func New(s *database.Store) http.Handler {
+func New(s *database.Store, publishers ...Publisher) http.Handler {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(func(c *gin.Context) {
@@ -160,6 +160,16 @@ func New(s *database.Store) http.Handler {
 			fail(c, 400)
 			return
 		}
+		if len(publishers) > 0 {
+			if err := publishers[0].Publish(c.Request.Context(), sub.ID); err != nil {
+				// Publication recovery is deferred; preserve an explicit durable failure when possible.
+				cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				_ = s.Fail(cleanup, sub.ID)
+				c.JSON(503, gin.H{"error": "queue unavailable", "submission_id": sub.ID})
+				return
+			}
+		}
 		c.JSON(202, sub)
 	})
 	history := func(c *gin.Context) {
@@ -227,6 +237,11 @@ func New(s *database.Store) http.Handler {
 		c.Status(204)
 	})
 	return r
+}
+
+// Publisher sends committed submission identifiers to the judge transport.
+type Publisher interface {
+	Publish(context.Context, string) error
 }
 
 // decode rejects oversized, unknown, and trailing fields to prevent privilege mass assignment.
