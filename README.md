@@ -2,9 +2,11 @@
 
 A Go platform for programming problems and asynchronous evaluation of submitted code, targeting Python and C++ with isolated Docker execution.
 
-Stack: Go 1.26+, Gin, pgx/PostgreSQL, Redis Streams, Docker, React/Next.js, Node.js 22+.
+Stack: Go 1.26.7+, Gin, pgx/PostgreSQL, Redis Streams, Docker, React/Next.js, Node.js 22+.
 
 Features include registration/login, staff problem authoring, public samples, hidden tests, bounded source submissions, history, and owner-only results. See [ROADMAP.md](ROADMAP.md) for status and [ARCHITECTURE.md](ARCHITECTURE.md) for service boundaries.
+
+Phases 1–3 are implemented and tested: core platform, single-worker judging, and sandbox security controls. Scaling and recovery features in Phase 4 and later are not implemented.
 
 ## Development
 
@@ -45,7 +47,7 @@ export REDIS_ADDR=127.0.0.1:6379
 go run ./cmd/worker
 ```
 
-The worker needs the same `DATABASE_URL` as the API and access to a local Linux Docker daemon. Run exactly one worker in this milestone. It syntax-checks Python or compiles C++23, runs visible and hidden tests, compares whitespace-separated tokens, and persists the first failing verdict or Accepted. Use **Refresh status** in the UI to poll results.
+The worker needs the same `DATABASE_URL` as the API and access to a local Linux Docker daemon. Run exactly one worker in this milestone. It syntax-checks Python or compiles C++23, runs visible and hidden tests, compares whitespace-separated tokens, and persists the first failing verdict or Accepted. Python provides its standard library without a package installer. Use **Refresh status** in the UI to poll results.
 
 Redis publication failures return HTTP 503 with the persisted submission ID. Crash recovery, retry scheduling, dead-letter queues, and transactional outbox delivery are deferred to Phase 4; this milestone does not guarantee automatic recovery of interrupted or unpublished work.
 
@@ -55,7 +57,7 @@ Use a dedicated test database whose user can create schemas:
 
 ```sh
 export TEST_DATABASE_URL='postgres://judge_test:your-password@localhost:5432/judge_test?sslmode=disable'
-go test -race ./cmd/... ./internal/... ./tests/...
+go test -race -p 1 ./cmd/... ./internal/... ./tests/...
 go vet ./cmd/... ./internal/... ./tests/...
 cd web
 npm test
@@ -65,3 +67,24 @@ npm run build
 Database tests skip when the environment variable is absent. Unit tests alone are not a complete integration check. No demo deployment or screenshots are available yet.
 
 For Redis, real language execution, and end-to-end tests, also set `TEST_REDIS_ADDR=127.0.0.1:6379`, `TEST_DOCKER=1`, `PYTHON_IMAGE`, and `CPP_IMAGE` before running the Go suite. Runtime image IDs are immutable; tags are used only to locate those IDs after a local build.
+
+## Sandbox security
+
+The worker requires a local Linux Docker daemon with cgroup v2 and readable `/proc/<container-pid>/cgroup`, `memory.peak`, and `memory.events` files. Monitoring failures stop evaluation rather than silently disabling limits. The API needs neither Docker access nor cgroup access.
+
+| Control | Enforced behavior |
+| --- | --- |
+| Identity | UID/GID 65534, all capabilities dropped, no new privileges, Docker default seccomp |
+| Network | No container network access |
+| Filesystem | Read-only root; 32 MiB `/work`, 16 MiB non-executable `/tmp`; no host mounts |
+| Resources | One CPU, 64 PIDs, exact problem memory limit, no extra swap |
+| Execution | Separate compiler budget: 15 seconds and 256 MiB; fresh container per test |
+| Output/files | 1 MiB combined stdout/stderr; 16 MiB per file; bounded compiler artifact transfer |
+| Secrets | No host environment, service credentials, or Docker socket in submission containers |
+| Results | Kernel OOM attribution; aggregate peak sandbox memory; no hidden diagnostics in APIs |
+
+Memory measurements include the runtime container's working files and processes. Container startup time is excluded from the execution deadline. Containers are forcibly removed after each operation, including cancellation. Docker shares the host kernel; these controls do not claim protection against every kernel exploit.
+
+Authentication is limited to 20 requests per minute per direct client address; submissions to 10 per minute per account. Redis outages reject these writes while public reads remain available. Forwarded client-address headers are untrusted by default.
+
+Language base images are digest-pinned. C++ builds apply available distribution security updates, so rebuilt image IDs can change and must be recertified with the golden/security suite. Preserve certified image IDs for repeatable execution. CI rejects fixable high/critical image findings. Upstream OS findings without published fixes remain; this milestone is not a production security certification. Image signing and production release approval are not configured.

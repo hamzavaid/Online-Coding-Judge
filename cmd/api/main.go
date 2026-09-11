@@ -3,17 +3,18 @@ package main
 
 import (
 	"context"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/api"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/hamzavaid/Online-Coding-Judge/internal/api"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 // main opens dependencies and drains requests on termination.

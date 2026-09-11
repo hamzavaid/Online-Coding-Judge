@@ -4,16 +4,17 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/judge"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/judge"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 // main reports startup or processing failure without logging source or test data.

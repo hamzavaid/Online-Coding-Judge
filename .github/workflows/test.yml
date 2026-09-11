@@ -1,0 +1,72 @@
+name: Test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: judge_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U ci -d judge_ci'
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd 'redis-cli ping'
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://ci:ci@localhost:5432/judge_ci?sslmode=disable
+      TEST_REDIS_ADDR: localhost:6379
+      TEST_DOCKER: '1'
+      GIN_MODE: release
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build pinned language images
+        run: |
+          docker build -t judge-python:1 language-images/python
+          docker build -t judge-cpp:1 language-images/cpp
+          echo "PYTHON_IMAGE=$(docker image inspect judge-python:1 --format '{{.Id}}')" >> "$GITHUB_ENV"
+          echo "CPP_IMAGE=$(docker image inspect judge-cpp:1 --format '{{.Id}}')" >> "$GITHUB_ENV"
+      - name: Go formatting, tests, vet, and build
+        run: |
+          test -z "$(gofmt -l cmd internal tests)"
+          make test-go
+          go build ./cmd/...
+      - name: Verify sandbox teardown
+        if: always()
+        run: test -z "$(docker ps -aq --filter label=online-coding-judge.sandbox=true)"
+      - name: UI tests and production build
+        run: |
+          cd web
+          npm ci
+          npm test
+          npm run build
+          npm audit --audit-level=moderate
+      - name: Go vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./cmd/... ./internal/...
+      - name: Reject fixable high or critical image vulnerabilities
+        run: |
+          for runtime in python cpp; do
+            docker save "judge-$runtime:1" -o "$RUNNER_TEMP/runtime.tar"
+            docker run --rm --cpus=1 --memory=1g --cap-drop=ALL --security-opt=no-new-privileges \
+              --mount "type=bind,src=$RUNNER_TEMP/runtime.tar,dst=/runtime.tar,readonly" \
+              aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+              image --input /runtime.tar --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+          done

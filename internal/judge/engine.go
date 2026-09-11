@@ -4,8 +4,9 @@ package judge
 import (
 	"context"
 	"errors"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 	"strings"
+
+	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 )
 
 // Job contains authoritative source and test data loaded from PostgreSQL, never from Redis.

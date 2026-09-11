@@ -2,10 +2,12 @@ package golden
 
 import (
 	"context"
+	"os"
+	"strings"
+	"testing"
+
 	"github.com/hamzavaid/Online-Coding-Judge/internal/judge"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
-	"os"
-	"testing"
 )
 
 // TestGolden certifies basic verdicts for both immutable language images using real Docker execution.
@@ -23,6 +25,10 @@ func TestGolden(t *testing.T) {
 		{"cpp_syntax", "cpp", "invalid c++ !", "", "", "COMPILATION_ERROR"},
 		{"python_runtime", "python", "raise RuntimeError('private output')", "", "", "RUNTIME_ERROR"},
 		{"cpp_runtime", "cpp", "int main(){return 1;}", "", "", "RUNTIME_ERROR"},
+		{"cpp_unicode", "cpp", "#include <iostream>\nint main(){std::cout<<\"\\xcf\\x80\";}", "", "\u03c0", "ACCEPTED"},
+		{"python_float_boundary", "python", "print(format(0.1+0.2,'.17g'))", "", "0.30000000000000004", "ACCEPTED"},
+		{"cpp_float_boundary", "cpp", "#include <iostream>\n#include <iomanip>\nint main(){std::cout<<std::setprecision(17)<<(0.1+0.2);}", "", "0.30000000000000004", "ACCEPTED"},
+		{"cpp_maximum_input", "cpp", "#include <iostream>\nint main(){int n=0;char c;while(std::cin.get(c))n++;std::cout<<n;}", strings.Repeat("x", 65536), "65536", "ACCEPTED"},
 		{"unicode", "python", "print('π')", "", "π", "ACCEPTED"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

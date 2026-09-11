@@ -3,9 +3,10 @@ package judge
 import (
 	"context"
 	"errors"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 	"reflect"
 	"testing"
+
+	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 )
 
 // TestCompare fixes token comparison semantics, including Unicode whitespace and exact numeric tokens.

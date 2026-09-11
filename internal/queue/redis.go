@@ -4,9 +4,10 @@ package queue
 import (
 	"context"
 	"errors"
-	"github.com/redis/go-redis/v9"
 	"strings"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Message contains identifiers only; source and hidden tests remain in PostgreSQL.
@@ -53,4 +54,13 @@ func (q *Stream) Receive(ctx context.Context) (Message, error) {
 // Ack confirms a result is durable; retained stream history is managed by operators.
 func (q *Stream) Ack(ctx context.Context, id string) error {
 	return q.client.XAck(ctx, q.name, "judge-workers", id).Err()
+}
+
+// Allow atomically increments a fixed-window counter and sets its expiry on first use.
+func (q *Stream) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
+	if limit < 1 || window < time.Millisecond {
+		return false, errors.New("invalid rate limit")
+	}
+	count, e := q.client.Eval(ctx, `local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('PEXPIRE',KEYS[1],ARGV[1]) end; return n`, []string{"judge:rate:" + key}, window.Milliseconds()).Int64()
+	return count <= int64(limit), e
 }

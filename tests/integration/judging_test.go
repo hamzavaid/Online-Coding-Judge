@@ -4,6 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/hamzavaid/Online-Coding-Judge/internal/api"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/auth"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
@@ -11,11 +17,6 @@ import (
 	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
 	"github.com/redis/go-redis/v9"
-	"net/http/httptest"
-	"os"
-	"strings"
-	"testing"
-	"time"
 )
 
 // TestSubmissionToVerdict follows HTTP -> PostgreSQL -> Redis -> Docker -> owner-only result.

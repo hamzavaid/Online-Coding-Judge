@@ -5,21 +5,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/gin-gonic/gin"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/auth"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
-	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
-	"github.com/jackc/pgx/v5/pgconn"
 	"io"
 	"net/http"
 	"net/mail"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/auth"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // New constructs the API; request bodies and database calls have hard bounds.
 func New(s *database.Store, publishers ...Publisher) http.Handler {
 	r := gin.New()
+	// Forwarded headers are untrusted unless a deployment explicitly configures its proxy boundary.
+	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
@@ -37,7 +40,15 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 		}
 		c.Status(204)
 	})
-	r.POST("/v1/auth/register", func(c *gin.Context) {
+	authLimit := func(c *gin.Context) { c.Next() }
+	submissionLimit := authLimit
+	if len(publishers) > 0 {
+		if limiter, ok := publishers[0].(Limiter); ok {
+			authLimit = rateLimit(limiter, "auth", 20)
+			submissionLimit = rateLimit(limiter, "submission", 10)
+		}
+	}
+	r.POST("/v1/auth/register", authLimit, func(c *gin.Context) {
 		var v struct {
 			Username string `json:"username"`
 			Email    string `json:"email"`
@@ -65,7 +76,7 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 		}
 		c.JSON(201, gin.H{"id": id})
 	})
-	r.POST("/v1/auth/login", func(c *gin.Context) {
+	r.POST("/v1/auth/login", authLimit, func(c *gin.Context) {
 		var v struct {
 			Email    string `json:"email"`
 			Password string `json:"password"`
@@ -146,7 +157,7 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 		}
 		c.Status(204)
 	})
-	private.POST("/submissions", func(c *gin.Context) {
+	private.POST("/submissions", submissionLimit, func(c *gin.Context) {
 		var v struct {
 			ProblemID string `json:"problem_id"`
 			Language  string `json:"language_id"`
