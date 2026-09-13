@@ -2,10 +2,14 @@ package judge
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestSandboxPolicy requires every execution boundary to carry the mandatory controls.
@@ -72,5 +76,31 @@ func TestNilContainerCleanup(t *testing.T) {
 	var c *container
 	if err := c.close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCanceledCreateCleansNamedContainer covers cancellation after the Docker
+// daemon accepts create but before its client returns a container identifier.
+func TestCanceledCreateCleansNamedContainer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Docker command requires a POSIX executable")
+	}
+	dir := t.TempDir()
+	cleanup := filepath.Join(dir, "cleanup")
+	script := "#!/bin/sh\nif [ \"$1\" = create ]; then\n  echo accepted\n  while :; do :; done\nelif [ \"$1\" = rm ]; then\n  printf '%s\\n' \"$@\" > \"$FAKE_CLEANUP\"\nfi\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLEANUP", cleanup)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	image := "sha256:" + strings.Repeat("a", 64)
+	if _, err := createContainer(ctx, image, 64); err == nil {
+		t.Fatal("canceled create succeeded")
+	}
+	removed, err := os.ReadFile(cleanup)
+	if err != nil || !strings.Contains(string(removed), "judge-") {
+		t.Fatalf("canceled create was not cleaned by name: %q %v", removed, err)
 	}
 }

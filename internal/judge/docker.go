@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -79,17 +81,24 @@ func createContainer(ctx context.Context, image string, memory int) (c *containe
 	if e != nil {
 		return nil, e
 	}
-	out, e := control(ctx, nil, 4096, args...)
+	name, e := containerName()
 	if e != nil {
 		return nil, e
 	}
-	c = &container{id: strings.TrimSpace(string(out))}
+	// A known name lets cleanup find a container even when cancellation prevents
+	// the Docker client from returning the daemon-created container ID.
+	args = append(args[:len(args)-1], "--name="+name, args[len(args)-1])
+	c = &container{id: name}
+	owned := c
 	ok := false
 	defer func() {
 		if !ok {
-			_ = c.close()
+			_ = owned.close()
 		}
 	}()
+	if _, e = control(ctx, nil, 4096, args...); e != nil {
+		return nil, e
+	}
 	if _, e = control(ctx, nil, 4096, "start", c.id); e != nil {
 		return nil, e
 	}
@@ -124,6 +133,15 @@ func createContainer(ctx context.Context, image string, memory int) (c *containe
 	}
 	ok = true
 	return c, nil
+}
+
+// containerName returns an unguessable worker-owned name for failure cleanup.
+func containerName() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "judge-" + hex.EncodeToString(random[:]), nil
 }
 
 // archive constructs a single regular-file tar with a fixed trusted destination name.
