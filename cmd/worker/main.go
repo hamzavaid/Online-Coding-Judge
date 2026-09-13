@@ -1,4 +1,4 @@
-// Command worker runs the initial sequential Redis consumer and Docker judge.
+// Command worker runs a bounded pool of Redis consumers and Docker judges.
 package main
 
 import (
@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -17,25 +18,27 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const workerLease = time.Minute
+
 // main reports startup or processing failure without logging source or test data.
 func main() {
-	if e := run(); e != nil {
-		slog.Error("worker stopped", "error", e)
+	if err := run(); err != nil {
+		slog.Error("worker stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-// run owns a single consumer and cancels its active sandbox on process termination.
+// run owns a bounded pool whose unique consumers can be replicated across processes.
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	pool, e := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-	if e != nil {
-		return e
+	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return err
 	}
 	defer pool.Close()
-	if e = pool.Ping(ctx); e != nil {
-		return e
+	if err = pool.Ping(ctx); err != nil {
+		return err
 	}
 	addr := os.Getenv("REDIS_ADDR")
 	if addr == "" {
@@ -43,30 +46,45 @@ func run() error {
 	}
 	client := redis.NewClient(&redis.Options{Addr: addr, ReadTimeout: 3 * time.Second, WriteTimeout: 3 * time.Second})
 	defer client.Close()
-	if e = client.Ping(ctx).Err(); e != nil {
-		return e
+	if err = client.Ping(ctx).Err(); err != nil {
+		return err
 	}
-	q := queue.New(client, "judge:submissions")
-	w := judge.Worker{Repo: database.New(pool), Queue: q, Engine: judge.Engine{Factory: judge.DockerFactory{Images: map[string]string{"python": os.Getenv("PYTHON_IMAGE"), "cpp": os.Getenv("CPP_IMAGE")}}}}
-	for ctx.Err() == nil {
-		message, e := q.Receive(ctx)
-		if errors.Is(e, redis.Nil) {
-			continue
+	concurrency := 3
+	if value := os.Getenv("WORKER_CONCURRENCY"); value != "" {
+		concurrency, err = strconv.Atoi(value)
+		if err != nil || concurrency < 1 || concurrency > 64 {
+			return errors.New("WORKER_CONCURRENCY must be between 1 and 64")
 		}
-		if e != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return e
-		}
-		slog.Info("judging submission", "submission_id", message.SubmissionID)
-		if e = w.Handle(ctx, message.SubmissionID, message.ID); e != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return e
-		}
-		slog.Info("submission persisted", "submission_id", message.SubmissionID)
 	}
-	return nil
+	host, _ := os.Hostname()
+	baseID := host + "-" + strconv.Itoa(os.Getpid())
+	stream := queue.New(client, "judge:submissions")
+	store := database.New(pool)
+	factory := judge.DockerFactory{Images: map[string]string{"python": os.Getenv("PYTHON_IMAGE"), "cpp": os.Getenv("CPP_IMAGE")}}
+	return judge.RunPool(ctx, concurrency, func(poolCtx context.Context, slot int) error {
+		workerID := baseID + "-" + strconv.Itoa(slot)
+		worker := judge.Worker{ID: workerID, Lease: workerLease, MaxDeliveries: 3, Repo: store, Queue: stream, Engine: judge.Engine{Factory: factory}}
+		for {
+			delivery, receiveErr := stream.Receive(poolCtx, workerID, workerLease)
+			if errors.Is(receiveErr, redis.Nil) {
+				continue
+			}
+			if receiveErr != nil {
+				if poolCtx.Err() != nil {
+					return nil
+				}
+				return receiveErr
+			}
+			slog.Info("judging submission", "submission_id", delivery.SubmissionID, "worker_id", workerID, "delivery_count", delivery.Deliveries)
+			if handleErr := worker.Handle(poolCtx, delivery); handleErr != nil {
+				if poolCtx.Err() != nil {
+					return nil
+				}
+				if errors.Is(handleErr, judge.ErrBusy) || errors.Is(handleErr, judge.ErrStaleAttempt) {
+					continue
+				}
+				return handleErr
+			}
+		}
+	})
 }

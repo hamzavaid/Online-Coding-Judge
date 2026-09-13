@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -42,12 +44,19 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pool.Close(); root.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE"); root.Close() })
-	sql, err := os.ReadFile("../../db/migrations/001_core.sql")
+	paths, err := filepath.Glob("../../db/migrations/*.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, string(sql)); err != nil {
-		t.Fatal(err)
+	sort.Strings(paths)
+	for _, path := range paths {
+		sql, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, err = pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
 	}
 	return pool
 }

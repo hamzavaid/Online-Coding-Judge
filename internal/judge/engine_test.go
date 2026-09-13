@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 )
@@ -81,9 +82,9 @@ type fakeRepo struct {
 	fail   bool
 }
 
-func (r fakeRepo) Claim(context.Context, string) (Job, error) {
+func (r fakeRepo) Claim(context.Context, string, string, time.Duration) (Job, error) {
 	*r.events = append(*r.events, "claim")
-	return Job{Language: "python", Problem: problems.Problem{Tests: []problems.TestCase{{Expected: "3"}}}}, nil
+	return Job{AttemptID: "attempt", AttemptNumber: 1, Language: "python", Problem: problems.Problem{Tests: []problems.TestCase{{Expected: "3"}}}}, nil
 }
 func (r fakeRepo) Transition(_ context.Context, _, state string) error {
 	*r.events = append(*r.events, state)
@@ -96,18 +97,21 @@ func (r fakeRepo) Finish(context.Context, string, Result) error {
 	}
 	return nil
 }
-func (r fakeRepo) Fail(context.Context, string) error { return nil }
+func (r fakeRepo) Fail(context.Context, string) error                 { return nil }
+func (r fakeRepo) Retry(context.Context, string, time.Duration) error { return nil }
+func (r fakeRepo) Renew(context.Context, string, time.Duration) error { return nil }
 
 type fakeAck struct{ events *[]string }
 
-func (q fakeAck) Ack(context.Context, string) error { *q.events = append(*q.events, "ack"); return nil }
+func (q fakeAck) Ack(context.Context, string) error                  { *q.events = append(*q.events, "ack"); return nil }
+func (q fakeAck) DeadLetter(context.Context, Delivery, string) error { return nil }
 
 // TestWorkerCommitBeforeAck makes persistence failures leave queue messages unacknowledged.
 func TestWorkerCommitBeforeAck(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		events := []string{}
-		w := Worker{Repo: fakeRepo{&events, fail}, Engine: Engine{Factory: fakeFactory{&fakeSandbox{runs: []Outcome{{Output: "3"}}}}}, Queue: fakeAck{&events}}
-		err := w.Handle(context.Background(), "sub", "msg")
+		w := Worker{ID: "worker", Lease: time.Minute, Repo: fakeRepo{&events, fail}, Engine: Engine{Factory: fakeFactory{&fakeSandbox{runs: []Outcome{{Output: "3"}}}}}, Queue: fakeAck{&events}}
+		err := w.Handle(context.Background(), Delivery{ID: "msg", SubmissionID: "sub"})
 		want := []string{"claim", "COMPILING", "RUNNING", "persist"}
 		if !fail {
 			want = append(want, "ack")

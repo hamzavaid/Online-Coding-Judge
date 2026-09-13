@@ -19,12 +19,18 @@ import (
 )
 
 // New constructs the API; request bodies and database calls have hard bounds.
-func New(s *database.Store, publishers ...Publisher) http.Handler {
+func New(s *database.Store, limiters ...Limiter) http.Handler {
 	r := gin.New()
 	// Forwarded headers are untrusted unless a deployment explicitly configures its proxy boundary.
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(func(c *gin.Context) {
+		if strings.HasSuffix(c.Request.URL.Path, "/events") {
+			c.Header("X-Content-Type-Options", "nosniff")
+			c.Header("Cache-Control", "no-store")
+			c.Next()
+			return
+		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 		c.Request = c.Request.WithContext(ctx)
@@ -42,11 +48,9 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 	})
 	authLimit := func(c *gin.Context) { c.Next() }
 	submissionLimit := authLimit
-	if len(publishers) > 0 {
-		if limiter, ok := publishers[0].(Limiter); ok {
-			authLimit = rateLimit(limiter, "auth", 20)
-			submissionLimit = rateLimit(limiter, "submission", 10)
-		}
+	if len(limiters) > 0 {
+		authLimit = rateLimit(limiters[0], "auth", 20)
+		submissionLimit = rateLimit(limiters[0], "submission", 10)
 	}
 	r.POST("/v1/auth/register", authLimit, func(c *gin.Context) {
 		var v struct {
@@ -171,16 +175,6 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 			fail(c, 400)
 			return
 		}
-		if len(publishers) > 0 {
-			if err := publishers[0].Publish(c.Request.Context(), sub.ID); err != nil {
-				// Publication recovery is deferred; preserve an explicit durable failure when possible.
-				cleanup, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				_ = s.Fail(cleanup, sub.ID)
-				c.JSON(503, gin.H{"error": "queue unavailable", "submission_id": sub.ID})
-				return
-			}
-		}
 		c.JSON(202, sub)
 	})
 	history := func(c *gin.Context) {
@@ -200,6 +194,46 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 		c.JSON(200, gin.H{"submissions": items})
 	}
 	private.GET("/submissions/:id", history)
+	private.GET("/submissions/:id/events", func(c *gin.Context) {
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			fail(c, 500)
+			return
+		}
+		user := c.MustGet("user").(database.User)
+		last := ""
+		for {
+			items, err := s.History(c.Request.Context(), user.ID, c.Param("id"))
+			if err != nil {
+				fail(c, 500)
+				return
+			}
+			if len(items) == 0 {
+				fail(c, 404)
+				return
+			}
+			payload, err := json.Marshal(items[0])
+			if err != nil {
+				fail(c, 500)
+				return
+			}
+			if string(payload) != last {
+				c.Header("Content-Type", "text/event-stream")
+				c.Header("Connection", "keep-alive")
+				_, _ = c.Writer.Write([]byte("event: submission\ndata: " + string(payload) + "\n\n"))
+				flusher.Flush()
+				last = string(payload)
+			}
+			if items[0].Status == "FINAL" || items[0].Status == "FAILED_INTERNAL" {
+				return
+			}
+			select {
+			case <-c.Request.Context().Done():
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	})
 	private.GET("/users/me/submissions", history)
 	admin := private.Group("/admin", func(c *gin.Context) {
 		if c.MustGet("user").(database.User).Role != "admin" {
@@ -248,11 +282,6 @@ func New(s *database.Store, publishers ...Publisher) http.Handler {
 		c.Status(204)
 	})
 	return r
-}
-
-// Publisher sends committed submission identifiers to the judge transport.
-type Publisher interface {
-	Publish(context.Context, string) error
 }
 
 // decode rejects oversized, unknown, and trailing fields to prevent privilege mass assignment.

@@ -14,6 +14,7 @@ import (
 	"github.com/hamzavaid/Online-Coding-Judge/internal/auth"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/judge"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/outbox"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/problems"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
 	"github.com/redis/go-redis/v9"
@@ -61,12 +62,16 @@ func TestSubmissionToVerdict(t *testing.T) {
 		if e = json.Unmarshal(w.Body.Bytes(), &sub); e != nil {
 			t.Fatal(e)
 		}
-		msg, e := q.Receive(ctx)
+		publisher := outbox.Publisher{ID: "integration-publisher", Store: store, Queue: q, Lease: time.Minute, BatchSize: 10}
+		if published, publishErr := publisher.PublishBatch(ctx); publishErr != nil || published != 1 {
+			t.Fatalf("published=%d error=%v", published, publishErr)
+		}
+		msg, e := q.Receive(ctx, "worker-one", time.Minute)
 		if e != nil {
 			t.Fatal(e)
 		}
-		worker := judge.Worker{Repo: store, Queue: q, Engine: judge.Engine{Factory: judge.DockerFactory{Images: map[string]string{"python": os.Getenv("PYTHON_IMAGE"), "cpp": os.Getenv("CPP_IMAGE")}}}}
-		if e = worker.Handle(ctx, msg.SubmissionID, msg.ID); e != nil {
+		worker := judge.Worker{ID: "worker-one", Lease: time.Minute, MaxDeliveries: 3, Repo: store, Queue: q, Engine: judge.Engine{Factory: judge.DockerFactory{Images: map[string]string{"python": os.Getenv("PYTHON_IMAGE"), "cpp": os.Getenv("CPP_IMAGE")}}}}
+		if e = worker.Handle(ctx, msg); e != nil {
 			t.Fatal(e)
 		}
 		r = httptest.NewRequest("GET", "/v1/submissions/"+sub.ID, nil)
@@ -82,7 +87,11 @@ func TestSubmissionToVerdict(t *testing.T) {
 		if sub.Status != "FINAL" || sub.Verdict == nil || *sub.Verdict != "ACCEPTED" || sub.TestsPassed != 2 {
 			t.Fatalf("%+v", sub)
 		}
-		if e = store.Transition(ctx, sub.ID, "RUNNING"); e == nil {
+		var attemptID string
+		if e = pool.QueryRow(ctx, "SELECT current_attempt_id FROM submissions WHERE id=$1", sub.ID).Scan(&attemptID); e != nil {
+			t.Fatal(e)
+		}
+		if e = store.Transition(ctx, attemptID, "RUNNING"); e == nil {
 			t.Fatal("terminal result mutable")
 		}
 	}

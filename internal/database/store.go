@@ -160,6 +160,9 @@ func (s *Store) CreateSubmission(ctx context.Context, user, id, language, source
 	if e != nil {
 		return sub, e
 	}
+	if _, e = tx.Exec(ctx, "INSERT INTO outbox_events(submission_id) VALUES($1)", sub.ID); e != nil {
+		return sub, e
+	}
 	sub.Status = "QUEUED"
 	sub.ProblemID = id
 	sub.Language = language

@@ -36,6 +36,66 @@ export default function Page() {
   useEffect(() => {
     loadProblems();
   }, []);
+  const pendingIDs = history
+    .filter((submission) =>
+      !["FINAL", "FAILED_INTERNAL"].includes(submission.status),
+    )
+    .map((submission) => submission.submission_id)
+    .sort()
+    .join(",");
+  // Stream owner-scoped updates for pending rows and close each connection at a terminal state.
+  useEffect(() => {
+    if (!token || !pendingIDs) return undefined;
+    const controllers = pendingIDs.split(",").map((id) => {
+      const controller = new AbortController();
+      (async () => {
+        try {
+          const response = await fetch(`/v1/submissions/${id}/events`, {
+            headers: {
+              Accept: "text/event-stream",
+              Authorization: "Bearer " + token,
+            },
+            signal: controller.signal,
+          });
+          if (!response.ok || !response.body)
+            throw new Error(`Request failed (${response.status})`);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder
+              .decode(value, { stream: true })
+              .replaceAll("\r\n", "\n");
+            let boundary;
+            while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+              const block = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              const data = block
+                .split("\n")
+                .filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).trimStart())
+                .join("\n");
+              if (!data) continue;
+              const update = JSON.parse(data);
+              setHistory((current) =>
+                current.map((submission) =>
+                  submission.submission_id === update.submission_id
+                    ? update
+                    : submission,
+                ),
+              );
+            }
+          }
+        } catch (error) {
+          if (error.name !== "AbortError") setMessage(error.message);
+        }
+      })();
+      return controller;
+    });
+    return () => controllers.forEach((controller) => controller.abort());
+  }, [token, pendingIDs]);
   // authenticate optionally registers the account, then loads its session and history.
   async function authenticate(event) {
     event.preventDefault();

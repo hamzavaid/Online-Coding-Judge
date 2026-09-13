@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/hamzavaid/Online-Coding-Judge/internal/api"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/database"
+	"github.com/hamzavaid/Online-Coding-Judge/internal/outbox"
 	"github.com/hamzavaid/Online-Coding-Judge/internal/queue"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -47,7 +49,12 @@ func run() error {
 	}
 	client := redis.NewClient(&redis.Options{Addr: redisAddr, ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second, MaxRetries: -1})
 	defer client.Close()
-	server := &http.Server{Addr: addr, Handler: api.New(database.New(pool), queue.New(client, "judge:submissions")), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	store := database.New(pool)
+	stream := queue.New(client, "judge:submissions")
+	publisher := &outbox.Publisher{ID: processID("api"), Store: store, Queue: stream, Lease: 30 * time.Second, BatchSize: 50}
+	go publishOutbox(ctx, store, publisher)
+	// Handler contexts bound ordinary requests; no server write deadline is set so SSE may outlive a judging run.
+	server := &http.Server{Addr: addr, Handler: api.New(store, stream), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServe() }()
 	select {
@@ -58,4 +65,32 @@ func run() error {
 		defer cancel()
 		return server.Shutdown(shutdown)
 	}
+}
+
+// publishOutbox continually transfers committed events and repairs missing queued events.
+func publishOutbox(ctx context.Context, store *database.Store, publisher *outbox.Publisher) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	reconcile := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	defer reconcile.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reconcile.C:
+			if _, err := store.ReconcileOutbox(ctx); err != nil {
+				slog.Warn("outbox reconciliation failed", "error", err)
+			}
+		case <-ticker.C:
+			if _, err := publisher.PublishBatch(ctx); err != nil {
+				slog.Warn("outbox publication failed", "error", err)
+			}
+		}
+	}
+}
+
+// processID builds a stable per-process identifier without exposing host secrets.
+func processID(prefix string) string {
+	host, _ := os.Hostname()
+	return prefix + "-" + host + "-" + strconv.Itoa(os.Getpid())
 }
