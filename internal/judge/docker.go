@@ -290,6 +290,9 @@ func (s *dockerSandbox) Close() error {
 
 // close forcibly removes all sandbox processes using a fresh bounded cleanup context.
 func (c *container) close() error {
+	if c == nil {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_, e := control(ctx, nil, 4096, "rm", "-f", c.id)

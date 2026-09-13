@@ -65,3 +65,12 @@ func TestSandboxRejectsInvalidJobs(t *testing.T) {
 		t.Fatal("oversized source")
 	}
 }
+
+// TestNilContainerCleanup makes cancellation cleanup safe after another path
+// has already released and cleared the compiler container.
+func TestNilContainerCleanup(t *testing.T) {
+	var c *container
+	if err := c.close(); err != nil {
+		t.Fatal(err)
+	}
+}
