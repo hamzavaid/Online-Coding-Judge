@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: judge-worker
+  namespace: coding-judge
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: judge-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: judge-worker
+        app.kubernetes.io/part-of: coding-judge
+    spec:
+      serviceAccountName: judge-worker
+      automountServiceAccountToken: false
+      hostPID: true
+      nodeSelector:
+        workload: judge
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: judge
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        supplementalGroups: [65532]
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: ghcr.io/hamzavaid/online-coding-judge-worker:0.5.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: health
+              containerPort: 8081
+          env:
+            - name: WORKER_HEALTH_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: judge-runtime
+                  key: WORKER_HEALTH_ADDR
+            - name: WORKER_CONCURRENCY
+              valueFrom:
+                configMapKeyRef:
+                  name: judge-runtime
+                  key: WORKER_CONCURRENCY
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: judge-runtime
+                  key: REDIS_ADDR
+            - name: PYTHON_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: judge-runtime
+                  key: PYTHON_IMAGE
+            - name: CPP_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: judge-runtime
+                  key: CPP_IMAGE
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: judge-runtime-secrets
+                  key: database-url
+            - name: DOCKER_HOST
+              value: unix:///var/run/docker.sock
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8081
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            periodSeconds: 10
+            timeoutSeconds: 2
+          volumeMounts:
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+            - name: host-cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+            - name: temp
+              mountPath: /tmp
+      volumes:
+        - name: docker-socket
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: temp
+          emptyDir:
+            sizeLimit: 32Mi
+      terminationGracePeriodSeconds: 75

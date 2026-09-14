@@ -16,6 +16,12 @@ Workers run bounded pools and may be replicated as independent processes. A work
 
 Compilation uses its own container and budget. The worker transfers only a bounded source or compiled artifact to a fresh container for each test. Host cgroup v2 counters supply memory and OOM evidence; writable sandbox files cannot supply verdict signals. Docker enforces network denial, read-only root, UID/capability restrictions, CPU/memory/PID limits, and bounded temporary filesystems. A synchronized output budget caps stdout and stderr together and cancels flooding execution.
 
-Redis also owns expiring rate-limit counters for authentication and submissions. Public reads remain independent of Redis. Owner-authenticated SSE reads authoritative PostgreSQL state and ends at a terminal status. The test workflow runs real PostgreSQL, Redis, Docker golden/security tests, Go race/vet checks, frontend tests/build, and dependency scans.
+Redis also owns expiring rate-limit counters for authentication and submissions. Public reads remain independent of Redis. Owner-authenticated SSE reads authoritative PostgreSQL state and ends at a terminal status. The test workflow runs real PostgreSQL, Redis, Docker golden/security tests, Go race/vet checks, frontend tests/build, and dependency and container-image scans.
 
-Kubernetes, contests, and operational dashboards belong to later phases.
+Kubernetes deploys the API and worker as separate application images in the `coding-judge` namespace. The API starts with three replicas behind a ClusterIP service and TLS ingress; its disruption budget keeps two replicas available. Judge workers start at three replicas and scale independently to thirty from CPU utilization. PostgreSQL and Redis remain external managed services.
+
+Namespace traffic is denied by default. Explicit policies admit ingress-controller traffic to the API and allow API/worker DNS, PostgreSQL, and Redis egress. Pods do not mount Kubernetes service-account tokens. API containers run non-root with a read-only filesystem and no Linux capabilities.
+
+Workers run only on nodes labeled `workload=judge` and tolerate the `dedicated=judge:NoSchedule` taint. The trusted worker pod runs non-root but uses host PID visibility, a read-only cgroup mount, and the node Docker socket to create and measure the existing hardened submission containers. Dedicated nodes keep this node-level control surface away from API workloads. Leases and Redis pending-entry recovery make node loss safe; no worker disruption budget blocks maintenance.
+
+Contests and operational dashboards belong to later phases.

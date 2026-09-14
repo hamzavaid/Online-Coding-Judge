@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,30 +63,81 @@ func run() error {
 	stream := queue.New(client, "judge:submissions")
 	store := database.New(pool)
 	factory := judge.DockerFactory{Images: map[string]string{"python": os.Getenv("PYTHON_IMAGE"), "cpp": os.Getenv("CPP_IMAGE")}}
-	return judge.RunPool(ctx, concurrency, func(poolCtx context.Context, slot int) error {
-		workerID := baseID + "-" + strconv.Itoa(slot)
-		worker := judge.Worker{ID: workerID, Lease: workerLease, MaxDeliveries: 3, Repo: store, Queue: stream, Engine: judge.Engine{Factory: factory}}
-		for {
-			delivery, receiveErr := stream.Receive(poolCtx, workerID, workerLease)
-			if errors.Is(receiveErr, redis.Nil) {
-				continue
-			}
-			if receiveErr != nil {
-				if poolCtx.Err() != nil {
-					return nil
-				}
-				return receiveErr
-			}
-			slog.Info("judging submission", "submission_id", delivery.SubmissionID, "worker_id", workerID, "delivery_count", delivery.Deliveries)
-			if handleErr := worker.Handle(poolCtx, delivery); handleErr != nil {
-				if poolCtx.Err() != nil {
-					return nil
-				}
-				if errors.Is(handleErr, judge.ErrBusy) || errors.Is(handleErr, judge.ErrStaleAttempt) {
+	healthAddr := os.Getenv("WORKER_HEALTH_ADDR")
+	if healthAddr == "" {
+		healthAddr = "127.0.0.1:8081"
+	}
+	var ready atomic.Bool
+	healthServer := &http.Server{Addr: healthAddr, Handler: healthHandler(&ready), ReadHeaderTimeout: 2 * time.Second}
+	healthDone := make(chan error, 1)
+	go func() {
+		healthDone <- healthServer.ListenAndServe()
+	}()
+	ready.Store(true)
+	defer func() {
+		ready.Store(false)
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = healthServer.Shutdown(shutdown)
+	}()
+
+	poolCtx, cancelPool := context.WithCancel(ctx)
+	defer cancelPool()
+	poolDone := make(chan error, 1)
+	go func() {
+		poolDone <- judge.RunPool(poolCtx, concurrency, func(poolCtx context.Context, slot int) error {
+			workerID := baseID + "-" + strconv.Itoa(slot)
+			worker := judge.Worker{ID: workerID, Lease: workerLease, MaxDeliveries: 3, Repo: store, Queue: stream, Engine: judge.Engine{Factory: factory}}
+			for {
+				delivery, receiveErr := stream.Receive(poolCtx, workerID, workerLease)
+				if errors.Is(receiveErr, redis.Nil) {
 					continue
 				}
-				return handleErr
+				if receiveErr != nil {
+					if poolCtx.Err() != nil {
+						return nil
+					}
+					return receiveErr
+				}
+				slog.Info("judging submission", "submission_id", delivery.SubmissionID, "worker_id", workerID, "delivery_count", delivery.Deliveries)
+				if handleErr := worker.Handle(poolCtx, delivery); handleErr != nil {
+					if poolCtx.Err() != nil {
+						return nil
+					}
+					if errors.Is(handleErr, judge.ErrBusy) || errors.Is(handleErr, judge.ErrStaleAttempt) {
+						continue
+					}
+					return handleErr
+				}
 			}
+		})
+	}()
+
+	select {
+	case err = <-poolDone:
+		return err
+	case err = <-healthDone:
+		cancelPool()
+		<-poolDone
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
 		}
+		return err
+	}
+}
+
+// healthHandler reports process liveness separately from dependency-checked readiness.
+func healthHandler(ready *atomic.Bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("GET /ready", func(response http.ResponseWriter, _ *http.Request) {
+		if !ready.Load() {
+			http.Error(response, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
+	})
+	return mux
 }

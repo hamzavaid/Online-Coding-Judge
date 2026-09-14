@@ -44,6 +44,10 @@ jobs:
           docker build -t judge-cpp:1 language-images/cpp
           echo "PYTHON_IMAGE=$(docker image inspect judge-python:1 --format '{{.Id}}')" >> "$GITHUB_ENV"
           echo "CPP_IMAGE=$(docker image inspect judge-cpp:1 --format '{{.Id}}')" >> "$GITHUB_ENV"
+      - name: Build Kubernetes application images
+        run: |
+          docker build --target api -t judge-api:ci .
+          docker build --target worker -t judge-worker:ci .
       - name: Go formatting, tests, vet, and build
         run: |
           test -z "$(gofmt -l cmd internal tests)"
@@ -63,8 +67,8 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./cmd/... ./internal/...
       - name: Reject fixable high or critical image vulnerabilities
         run: |
-          for runtime in python cpp; do
-            docker save "judge-$runtime:1" -o "$RUNNER_TEMP/runtime.tar"
+          for image in judge-python:1 judge-cpp:1 judge-api:ci judge-worker:ci; do
+            docker save "$image" -o "$RUNNER_TEMP/runtime.tar"
             chmod 0644 "$RUNNER_TEMP/runtime.tar"
             docker run --rm --cpus=1 --memory=1g --cap-drop=ALL --security-opt=no-new-privileges \
               --mount "type=bind,src=$RUNNER_TEMP/runtime.tar,dst=/runtime.tar,readonly" \

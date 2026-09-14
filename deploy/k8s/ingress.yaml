@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: judge-api
+  namespace: coding-judge
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["judge.example.com"]
+      secretName: judge-tls
+  rules:
+    - host: judge.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: judge-api
+                port:
+                  number: 80
